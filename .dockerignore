@@ -1,0 +1,38 @@
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Test files and coverage
+tests/
+.pytest_cache/
+htmlcov/
+.coverage
+.coverage.*
+*.cover
+
+# Development tools
+.git/
+.gitignore
+.vscode/
+.idea/
+
+# Environment files (may contain secrets)
+.env
+.env.local
+.env.*.local
+.venv/
+venv/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# UV specific
+uv.lock
+
+# Development dependencies we don't need in production
+pyproject.toml

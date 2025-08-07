@@ -146,6 +146,12 @@ ENV/
 env.bak/
 venv.bak/
 
+# Google Cloud Platform
+gcp/
+*.json
+!pyproject.toml
+!package.json
+
 # Spyder project settings
 .spyderproject
 .spyproject

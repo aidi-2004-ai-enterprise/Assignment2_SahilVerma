@@ -173,7 +173,7 @@ jobs:
 
     - name: Run performance tests
       run: |
-        uv run locust -f locustfile.py --headless \
+        uv run locust -f locustfile_gui.py --headless \
           --users 5 --spawn-rate 1 --run-time 30s \
           --host http://localhost:8080 \
           --html perf-test-report.html

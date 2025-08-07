@@ -206,7 +206,7 @@ jobs:
 
     - name: Run load tests
       run: |
-        uv run locust -f locustfile.py --headless \
+        uv run locust -f locustfile_gui.py --headless \
           --users 10 --spawn-rate 2 --run-time 60s \
           --host ${{ env.SERVICE_URL }} \
           --html load-test-report.html

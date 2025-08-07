@@ -164,7 +164,7 @@ jobs:
           --region ${{ env.REGION }} \
           --format 'value(status.url)')
         
-        uv run locust -f locustfile.py --headless \
+        uv run locust -f locustfile_gui.py --headless \
           --users 10 --spawn-rate 2 --run-time 120s \
           --host $SERVICE_URL \
           --html manual-load-test-report.html

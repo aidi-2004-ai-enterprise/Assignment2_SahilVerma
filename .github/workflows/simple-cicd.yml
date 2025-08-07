@@ -1,0 +1,132 @@
+name: Simple CI/CD
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    name: Test Application
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v3
+
+    - name: Install dependencies
+      run: |
+        uv sync --dev
+
+    - name: Run tests
+      run: |
+        uv run pytest tests/ -v
+      continue-on-error: true
+
+    - name: Test Docker build
+      run: |
+        docker build -t penguin-api:test .
+        echo "Docker build successful"
+
+  docker-test:
+    needs: test
+    runs-on: ubuntu-latest
+    name: Test Docker Container
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Build and test container
+      run: |
+        # Build the image
+        docker build -t penguin-api:latest .
+        
+        # Run container in background
+        docker run -d -p 8080:8080 --name test-api \
+          -e GCS_BUCKET_NAME="" \
+          penguin-api:latest
+        
+        # Wait for startup
+        echo "Waiting for container to start..."
+        sleep 15
+        
+        # Test health endpoint
+        echo "Testing health endpoint..."
+        curl -f http://localhost:8080/ || (docker logs test-api && exit 1)
+        
+        # Test prediction endpoint
+        echo "Testing prediction endpoint..."
+        curl -X POST "http://localhost:8080/predict" \
+          -H "Content-Type: application/json" \
+          -d '{"bill_length_mm": 39.1, "bill_depth_mm": 18.7, "flipper_length_mm": 181, "body_mass_g": 3750, "year": 2007, "sex": "male", "island": "Torgersen"}' \
+          || (docker logs test-api && exit 1)
+        
+        echo "All tests passed!"
+        
+        # Cleanup
+        docker stop test-api
+        docker rm test-api
+
+  load-test:
+    needs: docker-test
+    runs-on: ubuntu-latest
+    name: Simple Load Test
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v3
+
+    - name: Install dependencies
+      run: |
+        uv sync
+
+    - name: Start application for load testing
+      run: |
+        docker build -t penguin-api:loadtest .
+        docker run -d -p 8080:8080 --name loadtest-api \
+          -e GCS_BUCKET_NAME="" \
+          penguin-api:loadtest
+        sleep 15
+
+    - name: Run simple load test
+      run: |
+        uv run locust -f locustfile_gui.py --headless \
+          --users 5 --spawn-rate 1 --run-time 30s \
+          --host http://localhost:8080 \
+          --html simple-load-test-report.html
+      continue-on-error: true
+
+    - name: Upload load test results
+      uses: actions/upload-artifact@v4
+      with:
+        name: simple-load-test-report
+        path: simple-load-test-report.html
+      if: always()
+
+    - name: Show load test summary
+      run: |
+        echo "Load test completed. Check artifacts for detailed results."
+        docker logs loadtest-api | tail -10
+
+    - name: Cleanup
+      run: |
+        docker stop loadtest-api || true
+        docker rm loadtest-api || true

@@ -34,5 +34,10 @@ Thumbs.db
 # UV specific
 uv.lock
 
+# Documentation files
+*.md
+
 # Development dependencies we don't need in production
 pyproject.toml
+mydevproject-468021-1c67f77de444.json
+locustfile.py

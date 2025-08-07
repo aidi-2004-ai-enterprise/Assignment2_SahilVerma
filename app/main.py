@@ -9,7 +9,12 @@ import json
 import os
 import logging
 from typing import Dict
+from dotenv import load_dotenv
+import os
+from google.cloud import storage
+import tempfile
 
+# Environment variables will be loaded in load_model_and_metadata()
 # Configure logging to output to console
 logging.basicConfig(
     level=logging.DEBUG,
@@ -42,35 +47,122 @@ model = None
 label_encoder_classes = None
 feature_names = None
 
+def download_from_gcs(bucket_name: str, source_blob_name: str, destination_file_name: str):
+    """Download a file from Google Cloud Storage"""
+    try:
+        storage_client = storage.Client()
+        bucket = storage_client.bucket(bucket_name)
+        blob = bucket.blob(source_blob_name)
+        
+        blob.download_to_filename(destination_file_name)
+        logger.info(f"Downloaded {source_blob_name} from bucket {bucket_name} to {destination_file_name}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to download {source_blob_name} from GCS: {str(e)}")
+        return False
+
 def load_model_and_metadata():
-    """Load the trained XGBoost model and metadata"""
+    """Load the trained XGBoost model and metadata from local files or GCS"""
     global model, label_encoder_classes, feature_names
     
     logger.info("Starting model loading process...")
     
-    # Load XGBoost model
-    model_path = "app/data/model.json"
-    if not os.path.exists(model_path):
-        logger.error(f"Model file not found at {model_path}")
-        raise FileNotFoundError(f"Model file not found at {model_path}")
+    # Load environment variables when actually needed
+    env_loaded = load_dotenv(".env")
+    logger.info(f"Environment variables loaded: {env_loaded}")
     
-    model = xgb.XGBClassifier()
-    model.load_model(model_path)
-    logger.info(f"XGBoost model successfully loaded from {model_path}")
+    # Configuration for GCS (set these environment variables)
+    bucket_name = os.getenv("GCS_BUCKET_NAME", "")
+    model_blob_name = os.getenv("GCS_MODEL_PATH", "model.json")
+    metadata_blob_name = os.getenv("GCS_METADATA_PATH", "model_metadata.json")
+    credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
     
-    # Load metadata for consistent preprocessing
-    metadata_path = "app/data/model_metadata.json"
-    if not os.path.exists(metadata_path):
-        logger.error(f"Metadata file not found at {metadata_path}")
-        raise FileNotFoundError(f"Metadata file not found at {metadata_path}")
+    # Debug what we got from environment
+    logger.info(f"Raw environment values:")
+    logger.info(f"  GCS_BUCKET_NAME: '{bucket_name}'")
+    logger.info(f"  GCS_MODEL_PATH: '{model_blob_name}'")
+    logger.info(f"  GCS_METADATA_PATH: '{metadata_blob_name}'")
+    logger.info(f"  GOOGLE_APPLICATION_CREDENTIALS: '{credentials_path}'")
     
-    with open(metadata_path, 'r') as f:
-        metadata = json.load(f)
+    logger.info(f"GCS_BUCKET_NAME: {bucket_name}")
+    logger.info(f"GCS_MODEL_PATH: {model_blob_name}")
+    logger.info(f"GCS_METADATA_PATH: {metadata_blob_name}")
+    logger.info(f"GOOGLE_APPLICATION_CREDENTIALS: {credentials_path}")
+    logger.info(f"use_gcs decision: bucket_name={bool(bucket_name)}, credentials_path={bool(credentials_path)}, use_gcs={bucket_name and credentials_path}")
     
-    label_encoder_classes = metadata['label_encoder_classes']
-    feature_names = metadata['feature_names']
+    # Determine if we should use GCS or local files
+    # Use GCS by default if bucket is configured, even without explicit credentials (Cloud Run case)
+    use_gcs = bool(bucket_name)  # Use GCS if bucket name is provided
+    logger.info(f"Final use_gcs decision: {use_gcs} (bucket_name: {bool(bucket_name)})")
     
-    logger.info(f"Model metadata loaded successfully")
+    if use_gcs:
+        logger.info(f"Loading model from GCS bucket: {bucket_name}")
+        
+        # Create temporary files for downloaded models
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.json') as model_temp:
+            model_path = model_temp.name
+        
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.json') as metadata_temp:
+            metadata_path = metadata_temp.name
+        
+        try:
+            # Download model from GCS
+            if not download_from_gcs(bucket_name, model_blob_name, model_path):
+                raise FileNotFoundError(f"Failed to download model from GCS: {model_blob_name}")
+            
+            # Download metadata from GCS
+            if not download_from_gcs(bucket_name, metadata_blob_name, metadata_path):
+                raise FileNotFoundError(f"Failed to download metadata from GCS: {metadata_blob_name}")
+            
+            # Load XGBoost model
+            model = xgb.XGBClassifier()
+            model.load_model(model_path)
+            logger.info(f"XGBoost model successfully loaded from GCS: {model_blob_name}")
+            
+            # Load metadata
+            with open(metadata_path, 'r') as f:
+                metadata = json.load(f)
+            
+            label_encoder_classes = metadata['label_encoder_classes']
+            feature_names = metadata['feature_names']
+            
+            logger.info(f"Model metadata loaded successfully from GCS: {metadata_blob_name}")
+            
+        finally:
+            # Clean up temporary files
+            try:
+                os.unlink(model_path)
+                os.unlink(metadata_path)
+            except:
+                pass
+    
+    else:
+        logger.info("Loading model from local files")
+        
+        # Load XGBoost model from local path
+        model_path = "app/data/model.json"
+        if not os.path.exists(model_path):
+            logger.error(f"Model file not found at {model_path}")
+            raise FileNotFoundError(f"Model file not found at {model_path}")
+        
+        model = xgb.XGBClassifier()
+        model.load_model(model_path)
+        logger.info(f"XGBoost model successfully loaded from {model_path}")
+        
+        # Load metadata for consistent preprocessing
+        metadata_path = "app/data/model_metadata.json"
+        if not os.path.exists(metadata_path):
+            logger.error(f"Metadata file not found at {metadata_path}")
+            raise FileNotFoundError(f"Metadata file not found at {metadata_path}")
+        
+        with open(metadata_path, 'r') as f:
+            metadata = json.load(f)
+        
+        label_encoder_classes = metadata['label_encoder_classes']
+        feature_names = metadata['feature_names']
+        
+        logger.info(f"Model metadata loaded successfully from local files")
+    
     logger.info(f"Target classes: {label_encoder_classes}")
     logger.info(f"Feature names: {feature_names}")
 
@@ -175,6 +267,17 @@ async def startup_event():
     except Exception as e:
         logger.error(f"Failed to load model during startup: {str(e)}")
         raise e
+
+@app.get("/")
+async def health_check():
+    """
+    Health check endpoint
+    Returns basic application status
+    """
+    if model is None:
+        raise HTTPException(status_code=503, detail="Model not loaded")
+    
+    return {"status": "healthy", "model_loaded": True}
 
 @app.post("/predict")
 async def predict_penguin_species(penguin_data: PenguinFeatures) -> Dict:

@@ -1,0 +1,191 @@
+name: PR Validation
+
+on:
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  security-scan:
+    runs-on: ubuntu-latest
+    name: Security Scanning
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Run Trivy vulnerability scanner in repo mode
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        scan-ref: '.'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+
+    - name: Upload Trivy scan results to GitHub Security tab
+      uses: github/codeql-action/upload-sarif@v2
+      if: always()
+      with:
+        sarif_file: 'trivy-results.sarif'
+
+  docker-security:
+    runs-on: ubuntu-latest
+    name: Docker Security Scan
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Build Docker image
+      run: |
+        docker build -t ml-pipeline-app:pr-test .
+
+    - name: Run Trivy vulnerability scanner on Docker image
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: 'ml-pipeline-app:pr-test'
+        format: 'sarif'
+        output: 'docker-trivy-results.sarif'
+
+    - name: Upload Docker Trivy scan results
+      uses: github/codeql-action/upload-sarif@v2
+      if: always()
+      with:
+        sarif_file: 'docker-trivy-results.sarif'
+
+  comprehensive-test:
+    runs-on: ubuntu-latest
+    name: Comprehensive Testing
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v3
+
+    - name: Install dependencies
+      run: |
+        uv sync --dev
+
+    - name: Run comprehensive tests
+      run: |
+        uv run pytest tests/ -v --cov=app --cov-report=xml --cov-report=html --cov-report=term-missing
+        
+    - name: Check test coverage threshold
+      run: |
+        uv run coverage report --fail-under=70
+
+    - name: Upload coverage artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-report
+        path: htmlcov/
+
+  integration-test:
+    runs-on: ubuntu-latest
+    name: Integration Testing
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Build and test Docker container
+      run: |
+        docker build -t ml-pipeline-app:integration-test .
+        
+        # Start container
+        docker run -d -p 8080:8080 --name integration-test \
+          -e GCS_BUCKET_NAME= \
+          ml-pipeline-app:integration-test
+        
+        # Wait for startup
+        sleep 15
+        
+        # Health check
+        for i in {1..5}; do
+          if curl -f http://localhost:8080/; then
+            echo "Health check passed"
+            break
+          else
+            echo "Health check failed, retrying..."
+            sleep 5
+          fi
+        done
+        
+        # Test multiple prediction scenarios
+        echo "Testing Adelie prediction..."
+        curl -X POST "http://localhost:8080/predict" \
+          -H "Content-Type: application/json" \
+          -d '{"bill_length_mm": 39.1, "bill_depth_mm": 18.7, "flipper_length_mm": 181, "body_mass_g": 3750, "year": 2007, "sex": "male", "island": "Torgersen"}'
+        
+        echo "Testing Chinstrap prediction..."
+        curl -X POST "http://localhost:8080/predict" \
+          -H "Content-Type: application/json" \
+          -d '{"bill_length_mm": 48.7, "bill_depth_mm": 18.4, "flipper_length_mm": 196, "body_mass_g": 3600, "year": 2007, "sex": "female", "island": "Dream"}'
+        
+        echo "Testing Gentoo prediction..."
+        curl -X POST "http://localhost:8080/predict" \
+          -H "Content-Type: application/json" \
+          -d '{"bill_length_mm": 46.1, "bill_depth_mm": 15.2, "flipper_length_mm": 221, "body_mass_g": 5100, "year": 2007, "sex": "male", "island": "Biscoe"}'
+        
+        # Test error handling
+        echo "Testing invalid input..."
+        curl -X POST "http://localhost:8080/predict" \
+          -H "Content-Type: application/json" \
+          -d '{"invalid": "data"}' || echo "Expected error handled correctly"
+        
+        # Cleanup
+        docker stop integration-test
+        docker rm integration-test
+
+  performance-test:
+    runs-on: ubuntu-latest
+    name: Performance Testing
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v3
+
+    - name: Install dependencies
+      run: |
+        uv sync
+
+    - name: Start application for testing
+      run: |
+        docker build -t ml-pipeline-app:perf-test .
+        docker run -d -p 8080:8080 --name perf-test \
+          -e GCS_BUCKET_NAME= \
+          ml-pipeline-app:perf-test
+        sleep 15
+
+    - name: Run performance tests
+      run: |
+        uv run locust -f locustfile.py --headless \
+          --users 5 --spawn-rate 1 --run-time 30s \
+          --host http://localhost:8080 \
+          --html perf-test-report.html
+      continue-on-error: true
+
+    - name: Upload performance test results
+      uses: actions/upload-artifact@v4
+      with:
+        name: performance-test-report
+        path: perf-test-report.html
+
+    - name: Cleanup
+      run: |
+        docker stop perf-test
+        docker rm perf-test
